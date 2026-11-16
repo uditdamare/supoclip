@@ -135,6 +135,7 @@ services:
       - clips:/app/clips
       - ./backend/fonts:/app/fonts
       - ./backend/transitions:/app/transitions
+      - ./backend/bgm:/app/bgm:ro
     environment:
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
@@ -228,6 +229,7 @@ services:
       - FAST_MODE_MAX_CLIPS=${FAST_MODE_MAX_CLIPS:-10}
       - SPEAKER_FRAMING=${SPEAKER_FRAMING:-true}
       - HOOK_FIRST_TEASER=${HOOK_FIRST_TEASER:-false}
+      - BGM_VOLUME=${BGM_VOLUME:-0.12}
       - ASSEMBLY_AI_SPEECH_MODEL=${ASSEMBLY_AI_SPEECH_MODEL:-}
       - FAST_MODE_TRANSCRIPT_MODEL=${FAST_MODE_TRANSCRIPT_MODEL:-universal-3-5-pro}
       - SELF_HOST=${SELF_HOST:-true}
@@ -336,6 +338,7 @@ services:
       - clips:/app/clips
       - ./backend/fonts:/app/fonts
       - ./backend/transitions:/app/transitions
+      - ./backend/bgm:/app/bgm:ro
     environment: &worker-environment
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
@@ -436,6 +439,7 @@ services:
       - FAST_MODE_MAX_CLIPS=${FAST_MODE_MAX_CLIPS:-10}
       - SPEAKER_FRAMING=${SPEAKER_FRAMING:-true}
       - HOOK_FIRST_TEASER=${HOOK_FIRST_TEASER:-false}
+      - BGM_VOLUME=${BGM_VOLUME:-0.12}
       - ASSEMBLY_AI_SPEECH_MODEL=${ASSEMBLY_AI_SPEECH_MODEL:-}
       - FAST_MODE_TRANSCRIPT_MODEL=${FAST_MODE_TRANSCRIPT_MODEL:-universal-3-5-pro}
       - SELF_HOST=${SELF_HOST:-true}
@@ -517,6 +521,7 @@ services:
       - clips:/app/clips
       - ./backend/fonts:/app/fonts
       - ./backend/transitions:/app/transitions
+      - ./backend/bgm:/app/bgm:ro
     environment: *worker-environment
     restart: unless-stopped
     depends_on:

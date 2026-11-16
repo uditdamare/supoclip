@@ -522,6 +522,10 @@ def create_optimized_clip(
             if not framed_ok:
                 raise RuntimeError("ffmpeg reframe render failed")
 
+            # Optional background music (off unless BGM_DIR has tracks).
+            from .media.bgm import mix_background_music
+            mix_background_music(final_clip_path, seed=Path(output_path).name)
+
             shutil.move(str(final_clip_path), str(output_path))
             logger.info(f"Successfully created clip with ffmpeg: {output_path}")
             return True
