@@ -1143,7 +1143,10 @@ LLM_USAGE: contextvars.ContextVar[Optional[Dict[str, int]]] = contextvars.Contex
 def _record_llm_usage(result: Any) -> None:
     """Log one model call's token usage and add it to the task counter."""
     try:
-        usage = result.usage()
+        # pydantic-ai 1.x exposes usage as a property; older releases as a method.
+        usage = result.usage
+        if callable(usage):
+            usage = usage()
         input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
         output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
         requests = int(getattr(usage, "requests", 0) or 0)
