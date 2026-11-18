@@ -5,7 +5,7 @@ Video service - handles video processing business logic.
 import asyncio
 import copy
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Callable, Awaitable
+from typing import List, Dict, Any, Optional, Callable, Awaitable, Tuple
 import logging
 import json
 import subprocess
@@ -13,6 +13,8 @@ import uuid
 
 from ..stream_transfer import run_stream_download
 from ..utils.async_helpers import run_in_thread
+from ..range_download import RangeDownloadError, download_source_range
+from ..source_ranges import filter_segments, filter_transcript_text, format_timestamp, to_local
 from ..download_progress import (
     DownloadRecovery,
     ProgressCallback,
@@ -1150,12 +1152,18 @@ class VideoService:
         save_checkpoint: Callable[[Dict[str, Any]], Awaitable[None]],
         instructions: Optional[str] = None,
         max_clips: Optional[int] = None,
+        skip_ranges: Optional[List[Tuple[float, float]]] = None,
     ) -> tuple[Any, List[Dict[str, Any]], int, bool]:
         """Pick standalone highlights: (analysis, ranked segments with reserve, clip limit, final plan).
 
         ``instructions`` steers the analysis prompt; without them the
         analysis is exactly the original highlights pipeline.
+
+        ``skip_ranges`` (seconds on this file's timeline) are never shown to the
+        model, and any chosen segment that touches one is dropped.
         """
+        if skip_ranges:
+            transcript = filter_transcript_text(transcript, skip_ranges)
         # Step 3: AI analysis
         if should_cancel and await should_cancel():
             raise Exception("Task cancelled")
@@ -1280,6 +1288,19 @@ class VideoService:
             )
             segments_json.append(segment_payload)
 
+        if skip_ranges:
+            # Whatever the model returned (or an earlier attempt saved), nothing
+            # may come from a skipped span.
+            before = len(segments_json)
+            segments_json = filter_segments(segments_json, skip_ranges)
+            if len(segments_json) != before:
+                logger.info("Dropped %s segment(s) inside skipped timestamps", before - len(segments_json))
+            if not segments_json:
+                raise Exception(
+                    "No clip-worthy moments were found outside the skipped timestamps. "
+                    "Try skipping less, or a different time range."
+                )
+
         try:
             if not prepared_segments:
                 segments_json = VideoService._refine_segment_openings(
@@ -1342,10 +1363,17 @@ class VideoService:
         plan_cache: Optional[PlanCache] = None,
         outline_cache_key: Optional[str] = None,
         cleanup_settings: Optional[Dict[str, Any]] = None,
+        source_range: Optional[Tuple[float, float]] = None,
+        skip_ranges: Optional[List[Tuple[float, float]]] = None,
     ) -> Dict[str, Any]:
         """
         Complete video processing pipeline.
         Returns dict with segments and clips info.
+
+        ``source_range`` (YouTube, Twitch, Kick) downloads only that part of the
+        source; the file then starts at 0:00 and clip times are relative to it.
+        ``skip_ranges`` are spans on the source's own timeline that highlights
+        must not be taken from.
 
         Without ``workflow_spec`` (or for highlights) this picks standalone
         highlights. Any other workflow is planned by ``plan_workflow`` from the
@@ -1379,7 +1407,30 @@ class VideoService:
             if progress_callback:
                 await progress_callback(10, "Downloading video...", "processing")
 
-            if source_type == "youtube":
+            if source_range is not None and source_type in {"youtube", "twitch", "kick"}:
+                # Only the requested part comes down, so a 10-hour stream can be
+                # done in batches and the duration limit sees the part's length.
+                if progress_callback:
+                    await progress_callback(
+                        10,
+                        f"Downloading {format_timestamp(source_range[0])} - "
+                        f"{format_timestamp(source_range[1])}...",
+                        "processing",
+                    )
+                try:
+                    video_path = await run_in_thread(
+                        download_source_range,
+                        url,
+                        source_type,
+                        source_range,
+                        task_id,
+                        max_height=int(download_quality) if download_quality else None,
+                        max_bytes=getattr(runtime_config, "youtube_download_max_bytes", 2_000_000_000),
+                    )
+                except RangeDownloadError as exc:
+                    raise Exception(str(exc)) from exc
+                audio_first = False
+            elif source_type == "youtube":
                 job_budget = ByteBudget(
                     getattr(runtime_config, "youtube_download_max_bytes", 2_000_000_000)
                 )
@@ -1540,7 +1591,9 @@ class VideoService:
                 transcript = await VideoService.generate_transcript(
                     video_path,
                     processing_mode=processing_mode,
-                    source_url=url if source_type == "youtube" else None,
+                    # The video id's cached transcript is for the whole video; a
+                    # ranged file has its own timeline.
+                    source_url=url if source_type == "youtube" and source_range is None else None,
                 )
                 if checkpoint.get("analysis") or checkpoint.get("workflow_final"):
                     # Never combine new word timings with an old clip plan.
@@ -1570,6 +1623,13 @@ class VideoService:
             if workflow == "highlights":
                 instructions = workflow_spec.options.instructions if workflow_spec is not None else ""
                 requested_clips = workflow_spec.setting("max_clips") if workflow_spec is not None else None
+                # Skips are given on the source's timeline; a ranged download
+                # starts at 0:00, so shift them to the file's own timeline.
+                local_skips = to_local(
+                    skip_ranges or [],
+                    source_range[0] if source_range else 0.0,
+                    source_range[1] if source_range else float("inf"),
+                )
                 relevant_parts, segments_json, clip_limit, final_plan = await VideoService._select_highlight_segments(
                     video_path=video_path,
                     transcript=transcript,
@@ -1585,8 +1645,11 @@ class VideoService:
                     save_checkpoint=save_checkpoint,
                     **({"instructions": instructions} if instructions else {}),
                     **({"max_clips": requested_clips} if requested_clips is not None else {}),
+                    **({"skip_ranges": local_skips} if local_skips else {}),
                 )
             else:
+                if skip_ranges:
+                    logger.warning("Skip timestamps apply to highlights only; %s ignores them", workflow)
                 if should_cancel and await should_cancel():
                     raise Exception("Task cancelled")
                 if progress_callback:
@@ -1780,7 +1843,7 @@ class VideoService:
             }
 
         except (Exception, asyncio.CancelledError) as e:
-            if source_type == "youtube" and video_path is not None:
+            if source_type == "youtube" and video_path is not None and source_range is None:
                 video_id = get_youtube_video_id(url)
                 if video_id:
                     try:

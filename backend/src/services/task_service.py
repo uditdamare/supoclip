@@ -27,6 +27,7 @@ from ..repositories.source_repository import SourceRepository
 from ..repositories.clip_repository import ClipRepository
 from ..repositories.cache_repository import CacheRepository
 from ..repositories.task_checkpoint_repository import TaskCheckpointRepository, checkpoint_input_key
+from ..source_ranges import range_key_url, ranges_fingerprint, ranges_from_json, source_range_from_json
 from .video_service import VideoService
 from .clip_service import ClipEditingMixin, fill_output_starts
 from ..repositories.edit_transaction import serialized_task_edit, task_edit_transaction, TaskCancelled
@@ -305,6 +306,11 @@ class TaskService(ClipEditingMixin):
         if not video_path:
             return
 
+        if "range-sources" in Path(video_path).parts:
+            # A ranged task's section file is kept for regenerating and editing,
+            # and must not be backed up or cleaned as the whole video's cache.
+            return
+
         if source_type == "youtube":
             try:
                 video_id = extract_video_id(url)
@@ -532,6 +538,11 @@ class TaskService(ClipEditingMixin):
             task_row = await self.task_repo.get_task_by_id(self.db, task_id) or {}
             spec = workflow_spec_from_task(task_row, clip_length)
             prior_outputs = bool(await self.clip_repo.get_clips_by_task(self.db, task_id))
+            # Part of the source to process and spans to skip, saved with the
+            # task at creation so retries, resumes and requeues all see them.
+            range_metadata = await self.task_repo.load_source_metadata(self.db, task_id) or {}
+            source_range = source_range_from_json(range_metadata.get("source_range"))
+            skip_ranges = ranges_from_json(range_metadata.get("skip_ranges"))
             # New tasks already have an atomic acceptance charge. Recover queued
             # legacy jobs with missing durations before doing paid processing.
             if self.config.monetization_enabled and user_id:
@@ -549,8 +560,11 @@ class TaskService(ClipEditingMixin):
             # Reduced-resolution plans download at their output quality and get
             # a final downscale; 1080p plans keep the renderer's output.
             download_quality, output_short_side = reduced_media_limits(billing)
+            # A range is a different video as far as caches are concerned. These
+            # suffixes are only added when set, so existing keys are unchanged.
+            key_url = range_key_url(url, source_range)
             cache_key = self._build_cache_key(
-                url, source_type, processing_mode, download_quality
+                key_url, source_type, processing_mode, download_quality
             )
             if spec.legacy:
                 analysis_cache_key = self._build_analysis_cache_key(cache_key, clip_length)
@@ -558,9 +572,18 @@ class TaskService(ClipEditingMixin):
                 analysis_cache_key = self._build_workflow_cache_key(
                     cache_key, spec, self.config, cleanup_settings
                 )
+            if skip_ranges:
+                # The transcript is the same; what was picked from it is not.
+                analysis_cache_key = hashlib.sha256(
+                    f"{analysis_cache_key}|skips:{ranges_fingerprint(skip_ranges)}".encode("utf-8")
+                ).hexdigest()
             outline_cache_key = self._build_outline_cache_key(cache_key, self.config)
 
             cache_entry = await self.cache_repo.get_cache(self.db, cache_key)
+            if source_range is not None and cache_entry:
+                # A repeat download of a range can start on a different
+                # keyframe, so another task's word timings may not line up.
+                cache_entry = None
             cached_transcript = (
                 cache_entry.get("transcript_text") if cache_entry else None
             )
@@ -583,7 +606,11 @@ class TaskService(ClipEditingMixin):
             )
             if performance_context:
                 cached_analysis_json = None
-            input_key = checkpoint_input_key(url, source_type, processing_mode, clip_length, self.config)
+            input_key = checkpoint_input_key(
+                key_url
+                + (f"#skip={ranges_fingerprint(skip_ranges)}" if skip_ranges else ""),
+                source_type, processing_mode, clip_length, self.config,
+            )
             checkpoint = await self.checkpoint_repo.get(self.db, task_id, input_key)
             cache_hit = bool(
                 (checkpoint.get("transcript") or cached_transcript)
@@ -687,6 +714,8 @@ class TaskService(ClipEditingMixin):
                 clip_length=clip_length,
                 checkpoint=checkpoint,
                 checkpoint_callback=save_checkpoint,
+                **({"source_range": source_range} if source_range is not None else {}),
+                **({"skip_ranges": skip_ranges} if skip_ranges else {}),
                 **workflow_kwargs,
             )
             stage_timings["pipeline_seconds"] = round(

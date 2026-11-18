@@ -33,6 +33,7 @@ from ..editor_state import (
 )
 from ..stream_transfer import run_stream_download
 from ..utils.async_helpers import run_in_thread
+from ..source_ranges import range_key_url
 from ..media_storage import MediaStorage, STORAGE_ERRORS, media_work
 from ..stream_source import download_stream_sections
 
@@ -598,6 +599,15 @@ SOURCE_INCOMPLETE = (
 async def _download_editor_source(service, task_id: str, task: dict, ranges: list, download_quality) -> Path:
     """Fetch the source for this clip into a directory owned by this job."""
     source_url, source_type = task.get("source_url"), task.get("source_type")
+    if task.get("source_range") is not None:
+        # A task made from part of a long stream: its clips are timed relative
+        # to that section, so the editor reads the section, not the whole link.
+        try:
+            return await service._download_ranged_source(
+                source_url, source_type, task["source_range"], task_id, download_quality
+            )
+        except ValueError as exc:
+            raise EditorPrepareError(str(exc)) from exc
     if source_type == "youtube":
         from ..youtube_proxy import DownloadBudgetExceeded, YouTubeGeoRestrictedError
 
@@ -776,8 +786,15 @@ async def prepare_editor(ctx, task_id: str, clip_id: str, filename: str):
             mode = task.get("processing_mode") or service.config.default_processing_mode
             # Editor renders are downscaled for 720p plans, so their source can be too.
             download_quality, _ = await service._media_limits(task.get("user_id"))
+            source_range = await service._task_source_range(task_id, source_type)
+            if source_range is not None:
+                # Read while the session is open; the download step uses it.
+                task = {**task, "source_range": source_range}
             cache = await service.cache_repo.get_cache(
-                db, service._build_cache_key(source_url, source_type, mode, download_quality)
+                db,
+                service._build_cache_key(
+                    range_key_url(source_url, source_range), source_type, mode, download_quality
+                ),
             )
             cached_source = (
                 await run_in_thread(storage.local_path, cache["video_path"]) if cache and cache.get("video_path") else None

@@ -22,6 +22,8 @@ from ..clip_editor import (
 from ..video_utils import VALID_OUTPUT_FORMATS, parse_timestamp_to_seconds, create_optimized_clip
 from ..stream_transfer import run_stream_download
 from ..utils.async_helpers import run_in_thread
+from ..range_download import RangeDownloadError, download_source_range
+from ..source_ranges import range_key_url, source_range_from_json
 from ..clip_duration import clip_duration, normalize_clip_length
 from ..media.common import MAX_RENDERED_CLIP_SECONDS
 from ..clip_cleanup import normalize_clip_cleanup_settings
@@ -158,6 +160,34 @@ def _narrow_planned_meta(meta: Dict[str, Any], pieces: list, offsets: list) -> O
 
 
 class ClipEditingMixin:
+    async def _task_source_range(self, task_id: str, source_type: Optional[str]):
+        """The part of the source a task was made from, or ``None`` for a whole video."""
+        if source_type not in {"youtube", "twitch", "kick"} or self.db is None:
+            return None
+        metadata = await self.task_repo.load_source_metadata(self.db, task_id) or {}
+        return source_range_from_json(metadata.get("source_range"))
+
+    async def _download_ranged_source(
+        self, source_url: str, source_type: str, source_range, task_id: str, download_quality
+    ) -> Path:
+        """The section file of a ranged task (reused from disk when still there).
+
+        Clip times of such a task are relative to this file, so regenerating and
+        editing must read it, not re-download the link's own timeline.
+        """
+        try:
+            return await run_in_thread(
+                download_source_range,
+                source_url,
+                source_type,
+                source_range,
+                task_id,
+                max_height=int(download_quality) if download_quality else None,
+                max_bytes=self.config.youtube_download_max_bytes,
+            )
+        except RangeDownloadError as exc:
+            raise ValueError(str(exc)) from exc
+
     @serialized_task_edit
     async def delete_clip(self, task_id: str, clip_id: str) -> None:
         clip = await self.clip_repo.get_clip_by_id(self.db, clip_id)
@@ -322,7 +352,12 @@ class ClipEditingMixin:
             )
 
         video_path: Path
-        if source_type == "youtube":
+        source_range = await self._task_source_range(task_id, source_type)
+        if source_range is not None:
+            video_path = await self._download_ranged_source(
+                source_url, source_type, source_range, task_id, download_quality
+            )
+        elif source_type == "youtube":
             downloaded = await self.video_service.download_video(
                 source_url,
                 quality=download_quality,
@@ -783,10 +818,13 @@ class ClipEditingMixin:
             task.get("processing_mode") or self.config.default_processing_mode
         )
         download_quality, output_short_side = await self._media_limits(task.get("user_id"))
+        source_range = await self._task_source_range(task_id, source_type)
         if source_url and source_type:
             cache_entry = await self.cache_repo.get_cache(
                 self.db,
-                self._build_cache_key(source_url, source_type, processing_mode, download_quality),
+                self._build_cache_key(
+                    range_key_url(source_url, source_range), source_type, processing_mode, download_quality
+                ),
             )
             cached_video_path = cache_entry.get("video_path") if cache_entry else None
             if cached_video_path:
@@ -804,7 +842,12 @@ class ClipEditingMixin:
         source_ranges = await run_in_thread(self._get_clip_source_ranges, clip)
         downloaded_source: Optional[Path] = None
         if not transcript_video_path or not transcript_video_path.exists():
-            if source_type == "youtube" and source_url:
+            if source_range is not None and source_url:
+                transcript_video_path = await self._download_ranged_source(
+                    source_url, source_type, source_range, task_id, download_quality
+                )
+                downloaded_source = transcript_video_path
+            elif source_type == "youtube" and source_url:
                 downloaded = await self.video_service.download_video(
                     source_url,
                     quality=download_quality,

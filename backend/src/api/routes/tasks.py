@@ -62,6 +62,14 @@ from ...stream_source import (
 )
 from ...font_registry import is_font_accessible
 from ...clip_duration import normalize_clip_length, validate_clip_length
+from ...source_ranges import (
+    Range,
+    SourceRangeError,
+    format_timestamp,
+    parse_skip_ranges,
+    parse_source_range,
+    ranges_to_json,
+)
 from ...clip_cleanup import (
     new_task_cleanup_settings,
     normalize_clip_cleanup_settings,
@@ -108,8 +116,57 @@ def _duration_unavailable_error(platform: str) -> HTTPException:
     )
 
 
-async def _preflight_youtube_source(url: str, duration_limit: int) -> Dict[str, Any]:
-    """Check duration before creating a task or consuming a generation."""
+def _range_in_source(duration: float, source_range: Optional[Range]) -> Optional[Range]:
+    """The requested range clamped to the video's real length, or 422 if it starts after the end."""
+    if source_range is None:
+        return None
+    start, end = source_range
+    if start >= duration:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "INVALID_SOURCE_RANGE",
+                "message": (
+                    f"The range starts at {format_timestamp(start)} but this video is only "
+                    f"{format_timestamp(duration)} long. No minutes were used."
+                ),
+                "duration_seconds": duration,
+            },
+        )
+    return start, min(end, duration)
+
+
+def _too_long_error(duration: float, duration_limit: int, label: str, source_range: Optional[Range]) -> HTTPException:
+    if source_range is not None:
+        message = (
+            f"This section is {duration / 60:.1f} minutes long. The limit is "
+            f"{duration_limit / 60:g} minutes per task. Use a shorter time range "
+            "(or raise MAX_VIDEO_DURATION). No minutes were used."
+        )
+    else:
+        message = (
+            f"This {label} is {duration / 60:.1f} minutes long. Your plan allows "
+            f"videos up to {duration_limit / 60:g} minutes. "
+            "Choose a shorter video, or pick a time range. No minutes were used."
+        )
+    return HTTPException(
+        status_code=422,
+        detail={
+            "code": "VIDEO_TOO_LONG",
+            "message": message,
+            "duration_seconds": duration,
+            "max_duration_seconds": duration_limit,
+        },
+    )
+
+
+async def _preflight_youtube_source(
+    url: str, duration_limit: int, source_range: Optional[Range] = None
+) -> Dict[str, Any]:
+    """Check duration before creating a task or consuming a generation.
+
+    With a ``source_range`` the limit applies to that part, not the whole video.
+    """
     # wait_for cancels the awaiting task when this elapses. A yt-dlp call already
     # running inside asyncio.to_thread can finish in the background.
     timeout_seconds = get_config().youtube_preflight_timeout_seconds
@@ -170,23 +227,15 @@ async def _preflight_youtube_source(url: str, duration_limit: int) -> Dict[str, 
             },
         ) from None
 
-    if duration > duration_limit:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "VIDEO_TOO_LONG",
-                "message": (
-                    f"This video is {duration / 60:.1f} minutes long. Your plan allows "
-                    f"YouTube videos up to {duration_limit / 60:g} minutes. "
-                    "Choose a shorter video. No minutes were used."
-                ),
-                "duration_seconds": duration,
-                "max_duration_seconds": duration_limit,
-            },
-        )
+    clamped = _range_in_source(duration, source_range)
+    effective = (clamped[1] - clamped[0]) if clamped else duration
+    if effective > duration_limit:
+        raise _too_long_error(effective, duration_limit, "video", clamped)
     return metadata
 
-async def _preflight_stream_source(url: str, source: str, duration_limit: int) -> Dict[str, Any]:
+async def _preflight_stream_source(
+    url: str, source: str, duration_limit: int, source_range: Optional[Range] = None
+) -> Dict[str, Any]:
     try:
         # One overall deadline: yt-dlp (proxy, direct) metadata, then the cheap
         # metadata actor only when both fail. The full-video actor never runs
@@ -204,8 +253,10 @@ async def _preflight_stream_source(url: str, source: str, duration_limit: int) -
         raise HTTPException(status_code=422, detail={"code": "VIDEO_UNAVAILABLE", "message": str(exc)}) from None
     except Exception:
         raise HTTPException(status_code=503, detail={"code": "VIDEO_METADATA_UNAVAILABLE", "message": "We couldn't fetch this video, try again later. No minutes were used."}) from None
-    if duration > duration_limit:
-        raise HTTPException(status_code=422, detail={"code": "VIDEO_TOO_LONG", "message": f"This {source.title()} video is {duration / 60:.1f} minutes long. Your plan allows videos up to {duration_limit / 60:g} minutes. Choose a shorter VOD or clip. No minutes were used.", "duration_seconds": duration, "max_duration_seconds": duration_limit})
+    clamped = _range_in_source(duration, source_range)
+    effective = (clamped[1] - clamped[0]) if clamped else duration
+    if effective > duration_limit:
+        raise _too_long_error(effective, duration_limit, f"{source.title()} video", clamped)
     return metadata
 
 
@@ -621,6 +672,39 @@ async def _bind_existing_task(db, user_id, idempotency, response):
     return await _replay_task(db, user_id, idempotency) or response
 
 
+@router.post("/source-info")
+async def source_info(request: Request, db: AsyncSession = Depends(get_db)):
+    """Length and title of a YouTube, Twitch or Kick link, so a long video can be split into batches.
+
+    Creates nothing and charges nothing.
+    """
+    data = await _read_json_object(request)
+    await _get_user_id_from_headers(request, db)
+    url = data.get("url")
+    if not isinstance(url, str) or not url.strip():
+        raise HTTPException(status_code=400, detail="url is required")
+    url = url.strip()
+    try:
+        source_type = VideoService().determine_source_type(url)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    no_limit = 10**9
+    if source_type == "youtube":
+        metadata = await _preflight_youtube_source(canonical_youtube_url(url) or url, no_limit)
+    elif source_type in {"twitch", "kick"}:
+        metadata = await _preflight_stream_source(url, source_type, no_limit)
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "INVALID_SOURCE_RANGE", "message": "Only YouTube, Twitch and Kick links have a length to split."},
+        )
+    return {
+        "source_type": source_type,
+        "duration_seconds": float(metadata["duration"]),
+        "title": metadata.get("title"),
+    }
+
+
 @router.post("/")
 async def create_task(request: Request, db: AsyncSession = Depends(get_db)):
     """
@@ -687,6 +771,11 @@ async def _create_task(request: Request, db: AsyncSession, attempt: SourceAttemp
     cleanup_settings = new_task_cleanup_settings(data)
     if not raw_source or not raw_source.get("url"):
         raise HTTPException(status_code=400, detail="Source URL is required")
+    try:
+        requested_range = parse_source_range(data.get("source_range"))
+        skip_ranges = parse_skip_ranges(data.get("skip_ranges"))
+    except SourceRangeError as exc:
+        raise HTTPException(status_code=422, detail={"code": exc.code, "message": exc.message}) from None
 
     upload_options = {
         "url": raw_source["url"],
@@ -701,6 +790,11 @@ async def _create_task(request: Request, db: AsyncSession, attempt: SourceAttemp
         "clip_length": clip_length,
         "cleanup_settings": cleanup_settings,
     }
+    # Only present when set, so requests without them hash exactly as before.
+    if requested_range is not None:
+        upload_options["source_range"] = list(requested_range)
+    if skip_ranges:
+        upload_options["skip_ranges"] = ranges_to_json(skip_ranges)
     if not workflow_spec.legacy:
         # Plain highlights keep their existing key. The key is a hash, so topic
         # and instructions never leave the process.
@@ -728,6 +822,9 @@ async def _create_task(request: Request, db: AsyncSession, attempt: SourceAttemp
     source_key = None
     if db is not None:
         source_key = await source_key_for_url(db, user_id, raw_source["url"].strip())
+        if source_key and requested_range is not None:
+            # Batches of one long video are different tasks, not duplicates.
+            source_key = f"{source_key}@{int(requested_range[0])}-{int(requested_range[1])}"
         if source_key:
             existing = await TaskRepository.find_active_source_task(db, user_id, source_key)
             if existing is not None:
@@ -756,14 +853,28 @@ async def _create_task(request: Request, db: AsyncSession, attempt: SourceAttemp
             raw_source["url"] = canonical_youtube_url(raw_source["url"]) or raw_source["url"]
         source_title = raw_source.get("title")
         stream_metadata: Dict[str, Any] | None = None
+        if requested_range is not None and source_type not in {"youtube", "twitch", "kick"}:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "INVALID_SOURCE_RANGE",
+                    "message": "A time range works with YouTube, Twitch and Kick links, not uploaded files.",
+                },
+            )
+        # The video's full length and the part this task processes. Without a
+        # range they are the same.
+        source_total_seconds: Optional[float] = None
+        effective_range: Optional[Range] = None
         if source_type == "youtube":
             metadata = await _preflight_youtube_source(
-                raw_source["url"], billing["max_youtube_duration_seconds"]
+                raw_source["url"], billing["max_youtube_duration_seconds"], requested_range
             )
             source_title = source_title or metadata.get("title") or "YouTube Video"
             duration_seconds = float(metadata["duration"])
         elif source_type in {"twitch", "kick"}:
-            stream_metadata = await _preflight_stream_source(raw_source["url"], source_type, billing["max_youtube_duration_seconds"])
+            stream_metadata = await _preflight_stream_source(
+                raw_source["url"], source_type, billing["max_youtube_duration_seconds"], requested_range
+            )
             source_title = source_title or stream_metadata.get("title") or f"{source_type.title()} Video"
             duration_seconds = float(stream_metadata["duration"])
         else:
@@ -772,6 +883,14 @@ async def _create_task(request: Request, db: AsyncSession, attempt: SourceAttemp
             duration_seconds = await _preflight_upload_source(
                 raw_source["url"], user_id, billing["max_upload_duration_seconds"], db
             )
+
+        if requested_range is not None:
+            # Everything below (workflow minimums, billing, the stored length)
+            # concerns the part being processed. The full length is kept for
+            # downloads that need the stream's true duration.
+            source_total_seconds = duration_seconds
+            effective_range = _range_in_source(duration_seconds, requested_range)
+            duration_seconds = effective_range[1] - effective_range[0]
 
         try:
             check_source_duration(workflow_spec, duration_seconds)
@@ -839,6 +958,16 @@ async def _create_task(request: Request, db: AsyncSession, attempt: SourceAttemp
                             "enqueued_at": datetime.now(timezone.utc).isoformat(),
                             **({"source_key": source_key} if source_key else {}),
                             **_stream_resolution_metadata(stream_metadata),
+                            # Read by the worker, so retries, resumes and requeues keep them.
+                            **(
+                                {
+                                    "source_range": list(effective_range),
+                                    "source_total_seconds": source_total_seconds,
+                                }
+                                if effective_range is not None
+                                else {}
+                            ),
+                            **({"skip_ranges": ranges_to_json(skip_ranges)} if skip_ranges else {}),
                         },
                         source_url=raw_source["url"],
                         source_type=source_type,
