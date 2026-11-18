@@ -15,14 +15,16 @@
     "uploadFontRetry": "Failed to upload font. Please try again.",
     "processVideo": "Failed to process video. Please try again.",
     "fileTooLarge": "This file is {size}, which is over the {limit} upload limit. Try a shorter export or a smaller file.",
-    "api": "API error: {status}"
+    "api": "API error: {status}",
+    "batchStopped": "Started {done} of {total} batches before stopping."
   },
   "status": {
     "uploading": "Uploading video…",
     "checkingLength": "Checking video length…",
     "starting": "Starting generation…",
     "working": "Working…",
-    "uploadingFont": "Uploading…"
+    "uploadingFont": "Uploading…",
+    "batch": "Starting batch {current} of {total}…"
   },
   "drop": "Drop to upload your video",
   "readyToUpload": "{size} · ready to upload",
@@ -339,5 +341,24 @@
       "relaxed": "Allowed",
       "question": "A question"
     }
+  },
+  "range": {
+    "chip": "Range & skips",
+    "body": "For long streams and VODs: process one part at a time, and leave out parts like waiting time. Use the video's own timestamps.",
+    "part": "Part of the video",
+    "start": "Start time",
+    "end": "End time",
+    "startPlaceholder": "0:00:00",
+    "endPlaceholder": "1:10:00",
+    "partHint": "Leave empty for the whole video. Only this part is downloaded, and clip times count from its start. The length limit applies to this part, not the whole video.",
+    "skip": "Skip these timestamps",
+    "skipPlaceholder": "12:30-18:45, 1:02:00-1:10:00",
+    "skipHint": "Clips are never taken from these spans. Separate them with commas.",
+    "batch": "Split into batches",
+    "minutes": "minutes each",
+    "batchHint": "Creates one task per batch, back to back, and they run one after another. Needs a link. Leave empty for a single task.",
+    "invalid": "Check the time range: use times like 1:10:00, and the end must be after the start.",
+    "batchInvalid": "Batch length must be between {min} and {max} minutes.",
+    "nothingToSplit": "There is nothing to split in that time range."
   }
 }

@@ -15,14 +15,16 @@
     "uploadFontRetry": "Gagal mengunggah font. Coba lagi, ya.",
     "processVideo": "Gagal memproses video. Coba lagi, ya.",
     "fileTooLarge": "File ini {size}, melebihi batas unggah {limit}. Coba ekspor yang lebih pendek atau file yang lebih kecil.",
-    "api": "Error API: {status}"
+    "api": "Error API: {status}",
+    "batchStopped": "{done} dari {total} batch telah dimulai sebelum berhenti."
   },
   "status": {
     "uploading": "Mengunggah video…",
     "checkingLength": "Memeriksa durasi video…",
     "starting": "Memulai generasi…",
     "working": "Sedang bekerja…",
-    "uploadingFont": "Mengunggah…"
+    "uploadingFont": "Mengunggah…",
+    "batch": "Memulai batch {current} dari {total}…"
   },
   "drop": "Lepas untuk mengunggah videomu",
   "readyToUpload": "{size} · siap diunggah",
@@ -339,5 +341,24 @@
       "relaxed": "Diizinkan",
       "question": "Sebuah pertanyaan"
     }
+  },
+  "range": {
+    "chip": "Rentang & lewati",
+    "body": "Untuk stream dan VOD panjang: proses satu bagian dalam satu waktu dan lewati bagian seperti waktu menunggu. Gunakan stempel waktu video itu sendiri.",
+    "part": "Bagian video",
+    "start": "Waktu mulai",
+    "end": "Waktu selesai",
+    "startPlaceholder": "0:00:00",
+    "endPlaceholder": "1:10:00",
+    "partHint": "Kosongkan untuk memakai seluruh video. Hanya bagian ini yang diunduh, dan waktu klip dihitung dari awalnya. Batas durasi berlaku untuk bagian ini, bukan seluruh video.",
+    "skip": "Lewati stempel waktu ini",
+    "skipPlaceholder": "12:30-18:45, 1:02:00-1:10:00",
+    "skipHint": "Klip tidak akan pernah diambil dari rentang ini. Pisahkan dengan koma.",
+    "batch": "Bagi menjadi beberapa batch",
+    "minutes": "menit per batch",
+    "batchHint": "Membuat satu tugas per batch, berurutan tanpa jeda, dan dijalankan satu per satu. Memerlukan tautan. Kosongkan untuk satu tugas.",
+    "invalid": "Periksa rentang waktu: gunakan waktu seperti 1:10:00 dan pastikan akhir setelah awal.",
+    "batchInvalid": "Panjang batch harus antara {min} dan {max} menit.",
+    "nothingToSplit": "Tidak ada yang bisa dibagi dalam rentang waktu itu."
   }
 }

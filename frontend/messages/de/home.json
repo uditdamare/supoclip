@@ -15,14 +15,16 @@
     "uploadFontRetry": "Schrift konnte nicht hochgeladen werden. Versuch es noch einmal.",
     "processVideo": "Video konnte nicht verarbeitet werden. Versuch es noch einmal.",
     "fileTooLarge": "Diese Datei ist {size} und damit über dem Upload-Limit von {limit}. Versuch einen kürzeren Export oder eine kleinere Datei.",
-    "api": "API-Fehler: {status}"
+    "api": "API-Fehler: {status}",
+    "batchStopped": "{done} von {total} Stapeln wurden gestartet, dann wurde gestoppt."
   },
   "status": {
     "uploading": "Video wird hochgeladen…",
     "checkingLength": "Videolänge wird geprüft…",
     "starting": "Generierung startet…",
     "working": "Arbeitet…",
-    "uploadingFont": "Wird hochgeladen…"
+    "uploadingFont": "Wird hochgeladen…",
+    "batch": "Stapel {current} von {total} wird gestartet…"
   },
   "drop": "Loslassen, um dein Video hochzuladen",
   "readyToUpload": "{size} · bereit zum Hochladen",
@@ -339,5 +341,24 @@
       "relaxed": "Erlaubt",
       "question": "Eine Frage"
     }
+  },
+  "range": {
+    "chip": "Bereich & Auslassungen",
+    "body": "Für lange Streams und VODs: Jeweils nur einen Teil verarbeiten und Abschnitte wie Wartezeiten auslassen. Verwende die Zeitstempel des Videos.",
+    "part": "Teil des Videos",
+    "start": "Startzeit",
+    "end": "Endzeit",
+    "startPlaceholder": "0:00:00",
+    "endPlaceholder": "1:10:00",
+    "partHint": "Leer lassen für das ganze Video. Nur dieser Teil wird heruntergeladen; Clipzeiten zählen ab seinem Anfang. Das Längenlimit gilt für diesen Teil, nicht für das ganze Video.",
+    "skip": "Diese Zeitstempel überspringen",
+    "skipPlaceholder": "12:30-18:45, 1:02:00-1:10:00",
+    "skipHint": "Aus diesen Abschnitten werden nie Clips erstellt. Mit Kommas trennen.",
+    "batch": "In Stapel aufteilen",
+    "minutes": "Minuten pro Stapel",
+    "batchHint": "Erstellt pro Stapel eine Aufgabe, lückenlos hintereinander; sie laufen nacheinander. Erfordert einen Link. Leer lassen für eine einzelne Aufgabe.",
+    "invalid": "Prüfe den Zeitbereich: Nutze Zeiten wie 1:10:00, und das Ende muss nach dem Start liegen.",
+    "batchInvalid": "Die Stapellänge muss zwischen {min} und {max} Minuten liegen.",
+    "nothingToSplit": "In diesem Zeitbereich gibt es nichts aufzuteilen."
   }
 }

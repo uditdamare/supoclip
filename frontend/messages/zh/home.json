@@ -15,14 +15,16 @@
     "uploadFontRetry": "字体上传失败。请再试一次。",
     "processVideo": "视频处理失败。请再试一次。",
     "fileTooLarge": "这个文件有 {size}，超过了 {limit} 的上传上限。请换一个更短的导出或更小的文件。",
-    "api": "API 错误：{status}"
+    "api": "API 错误：{status}",
+    "batchStopped": "已启动 {done}/{total} 个批次后停止。"
   },
   "status": {
     "uploading": "正在上传视频…",
     "checkingLength": "正在检查视频时长…",
     "starting": "正在开始生成…",
     "working": "处理中…",
-    "uploadingFont": "正在上传…"
+    "uploadingFont": "正在上传…",
+    "batch": "正在启动第 {current} 批，共 {total} 批…"
   },
   "drop": "松开即可上传视频",
   "readyToUpload": "{size} · 可以上传",
@@ -339,5 +341,24 @@
       "relaxed": "允许",
       "question": "一个问题"
     }
+  },
+  "range": {
+    "chip": "时间范围与跳过",
+    "body": "适用于很长的直播和回放：一次处理一部分，并跳过等待时间等片段。请使用视频本身的时间戳。",
+    "part": "视频的一部分",
+    "start": "开始时间",
+    "end": "结束时间",
+    "startPlaceholder": "0:00:00",
+    "endPlaceholder": "1:10:00",
+    "partHint": "留空则使用整个视频。只会下载这一部分，片段时间从其开头开始计算。时长限制按这一部分计算，而不是整个视频。",
+    "skip": "跳过这些时间段",
+    "skipPlaceholder": "12:30-18:45, 1:02:00-1:10:00",
+    "skipHint": "绝不会从这些时间段中截取片段。用逗号分隔。",
+    "batch": "拆分为批次",
+    "minutes": "分钟/批",
+    "batchHint": "每个批次创建一个任务，首尾相接，按顺序依次运行。需要链接。留空则只创建一个任务。",
+    "invalid": "请检查时间范围：使用类似 1:10:00 的时间，并且结束时间要晚于开始时间。",
+    "batchInvalid": "批次时长必须在 {min} 到 {max} 分钟之间。",
+    "nothingToSplit": "该时间范围内没有可拆分的内容。"
   }
 }

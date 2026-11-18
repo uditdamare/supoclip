@@ -6,7 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
 import {
   AlertCircle, ArrowRight, ArrowUp, Captions, CaptionsOff, Check, ChevronDown, Clapperboard, Crop, FileVideo, SlidersHorizontal,
-  Info, ListOrdered, Loader2, MessageSquareText, Timer, Paperclip, Sparkles, Target, Upload, Link2, Wand2, X,
+  Info, ListOrdered, Loader2, MessageSquareText, Timer, Paperclip, Scissors, Sparkles, Target, Upload, Link2, Wand2, X,
 } from "lucide-react";
 import { CaptionSizeControl } from "@/components/caption-size-control";
 import { ComposerSettings } from "@/components/composer-settings";
@@ -39,6 +39,9 @@ import { hasPaidAccess } from "@/lib/subscription-status";
 import { trackEvent } from "@/lib/analytics";
 import { track } from "@/lib/datafast";
 import { taskPathFromCreate } from "@/lib/task-create";
+import {
+  MAX_BATCH_MINUTES, MIN_BATCH_MINUTES, OPEN_END_SECONDS, parseClockTime, planBatches, rangeText,
+} from "@/lib/time-ranges";
 import { formatSupportMessage, parseApiError, type ApiErrorInfo } from "@/lib/api-error";
 import { buildFontOptionsPayload, FONT_TEMPLATE_DEFAULT_VALUE, savedCaptionDefaults, STOCK_FONT_DEFAULTS } from "@/lib/font-options";
 import { fetchGenerations, type GenerationSummary } from "@/lib/generations";
@@ -175,6 +178,11 @@ export default function HomeApp() {
   const [pauseThresholdMs, setPauseThresholdMs] = useState("1200");
   const [removeFillerWords, setRemoveFillerWords] = useState(true);
   const [filteredWords, setFilteredWords] = useState("");
+  // Per video, so none of these are remembered: the part of a link to use, spans to skip, and batch size.
+  const [rangeStart, setRangeStart] = useState("");
+  const [rangeEnd, setRangeEnd] = useState("");
+  const [skipText, setSkipText] = useState("");
+  const [batchMinutes, setBatchMinutes] = useState("");
 
   // What to make. Hidden, and always plain highlights, unless the server enables workflows.
   const router = useRouter();
@@ -643,7 +651,11 @@ export default function HomeApp() {
     t(`framingOptions.${outputFormat}.label`),
   ].join(" · ");
   // Cleanup is on by default, so it isn't counted as a change here; its own section shows what's on.
-  const changedCount = advancedCount + (includeBroll ? 1 : 0);
+  // Part of the link to use, spans to skip, batches: each counts once when filled in.
+  const rangeCount = sourceType !== "upload"
+    ? (rangeStart.trim() || rangeEnd.trim() ? 1 : 0) + (skipText.trim() ? 1 : 0) + (batchMinutes.trim() ? 1 : 0)
+    : 0;
+  const changedCount = advancedCount + (includeBroll ? 1 : 0) + rangeCount;
   const settingsChanged = changedCount > 0 || selectedLength !== "auto" || partCount !== "auto" || customized || !addSubtitles;
 
   // Only what is valid is remembered, so a half-typed number never comes back to block the form.
@@ -796,26 +808,79 @@ export default function HomeApp() {
       if (Object.keys(options).length > 0) request.workflow_options = options;
       if (sentInstructions) request.instructions = sentInstructions;
 
-      setStatusMessage(sourceType === "youtube" ? t("status.checkingLength") : t("status.starting"));
-      const startResponse = await fetch("/api/tasks/create", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(request),
-      });
-
-      if (!startResponse.ok) {
-        const info = await parseApiError(startResponse, t("errors.api", { status: startResponse.status }));
-        const upgradeForError = upgradeReasonForError(info.code, info.detail, upgradeState?.nextPlan?.youtubeMaxMinutes);
-        if (upgradeForError) {
-          openUpgrade(upgradeForError);
-          setIsLoading(false);
-          setStatusMessage("");
-          return;
-        }
-        throw new Error(formatSupportMessage({ ...info, message: workflowErrorMessage(info) ?? info.message }));
+      // Part of a link, spans to skip, and batches of a long stream. Links only.
+      const isLink = sourceType !== "upload";
+      const startText = rangeStart.trim();
+      const endText = rangeEnd.trim();
+      let rangeFrom: number | null = null;
+      let rangeTo: number | null = null;
+      if (isLink && (startText || endText)) {
+        rangeFrom = startText ? parseClockTime(startText) : 0;
+        rangeTo = endText ? parseClockTime(endText) : OPEN_END_SECONDS;
+        if (rangeFrom === null || rangeTo === null || rangeTo <= rangeFrom) throw new Error(t("range.invalid"));
+      }
+      const skipSpans = isLink ? skipText.trim() : "";
+      if (skipSpans) request.skip_ranges = skipSpans;
+      const batchSize = isLink && batchMinutes.trim() ? Number(batchMinutes) : 0;
+      if (batchSize && (!Number.isFinite(batchSize) || batchSize < MIN_BATCH_MINUTES || batchSize > MAX_BATCH_MINUTES)) {
+        throw new Error(t("range.batchInvalid", { min: MIN_BATCH_MINUTES, max: MAX_BATCH_MINUTES }));
       }
 
-      const startResult = await startResponse.json();
+      let rangesToRun: Array<string | null> = [null];
+      if (batchSize > 0) {
+        setStatusMessage(t("status.checkingLength"));
+        const lengthResponse = await fetch("/api/tasks/source-info", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: videoUrl }),
+        });
+        if (!lengthResponse.ok) {
+          const info = await parseApiError(lengthResponse, t("errors.api", { status: lengthResponse.status }));
+          throw new Error(formatSupportMessage(info));
+        }
+        const total = Number((await lengthResponse.json()).duration_seconds);
+        const batches = planBatches(rangeFrom ?? 0, Math.min(rangeTo ?? total, total), batchSize * 60);
+        if (batches.length === 0) throw new Error(t("range.nothingToSplit"));
+        rangesToRun = batches.map(rangeText);
+      } else if (rangeFrom !== null && rangeTo !== null) {
+        rangesToRun = [rangeText({ start: rangeFrom, end: rangeTo })];
+      }
+
+      // One task per range. The account renders one video at a time, so batches run in order.
+      const startedTasks: Array<{ task_id?: string; duplicate?: boolean; code?: string }> = [];
+      for (let index = 0; index < rangesToRun.length; index += 1) {
+        const range = rangesToRun[index];
+        setStatusMessage(
+          rangesToRun.length > 1
+            ? t("status.batch", { current: index + 1, total: rangesToRun.length })
+            : sourceType === "youtube" ? t("status.checkingLength") : t("status.starting"),
+        );
+        const startResponse = await fetch("/api/tasks/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(range ? { ...request, source_range: range } : request),
+        });
+
+        if (!startResponse.ok) {
+          const info = await parseApiError(startResponse, t("errors.api", { status: startResponse.status }));
+          const upgradeForError = upgradeReasonForError(info.code, info.detail, upgradeState?.nextPlan?.youtubeMaxMinutes);
+          if (upgradeForError) {
+            openUpgrade(upgradeForError);
+            setIsLoading(false);
+            setStatusMessage("");
+            return;
+          }
+          const failure = formatSupportMessage({ ...info, message: workflowErrorMessage(info) ?? info.message });
+          throw new Error(
+            startedTasks.length > 0
+              ? `${t("errors.batchStopped", { done: startedTasks.length, total: rangesToRun.length })} ${failure}`
+              : failure,
+          );
+        }
+        startedTasks.push(await startResponse.json());
+      }
+
+      const startResult = startedTasks[0];
       const alreadyProcessing = Boolean(startResult.duplicate) || startResult.code === "DUPLICATE_SOURCE";
       if (!alreadyProcessing) track("task_created", {
         // Analytics keeps ten fields, so workflow runs lead with theirs; plain highlights reports as before.
@@ -1310,6 +1375,33 @@ export default function HomeApp() {
                         <p className="text-xs text-muted-foreground">{t("brollHint")}</p>
                       </div>
                       <Switch id="include-broll" checked={includeBroll} onCheckedChange={setIncludeBroll} disabled={controlsDisabled} />
+                    </div>
+                  ) }] : []),
+                  ...(sourceType !== "upload" ? [{ id: "range", label: t("range.chip"), icon: <Scissors />, count: rangeCount, content: (
+                    <div className="space-y-4">
+                      <p className="text-xs text-muted-foreground">{t("range.body")}</p>
+                      <div className="space-y-1.5">
+                        <label htmlFor="range-start" className="text-sm font-medium">{t("range.part")}</label>
+                        <div className="flex items-center gap-2">
+                          <Input id="range-start" value={rangeStart} onChange={(e) => setRangeStart(e.target.value)} placeholder={t("range.startPlaceholder")} aria-label={t("range.start")} disabled={controlsDisabled} className="h-8" />
+                          <span aria-hidden className="text-muted-foreground">–</span>
+                          <Input id="range-end" value={rangeEnd} onChange={(e) => setRangeEnd(e.target.value)} placeholder={t("range.endPlaceholder")} aria-label={t("range.end")} disabled={controlsDisabled} className="h-8" />
+                        </div>
+                        <p className="text-xs text-muted-foreground">{t("range.partHint")}</p>
+                      </div>
+                      <div className="space-y-1.5">
+                        <label htmlFor="skip-ranges" className="text-sm font-medium">{t("range.skip")}</label>
+                        <Textarea id="skip-ranges" rows={2} value={skipText} onChange={(e) => setSkipText(e.target.value)} placeholder={t("range.skipPlaceholder")} disabled={controlsDisabled} className="min-h-14 resize-none text-sm" />
+                        <p className="text-xs text-muted-foreground">{t("range.skipHint")}</p>
+                      </div>
+                      <div className="space-y-1.5">
+                        <label htmlFor="batch-minutes" className="text-sm font-medium">{t("range.batch")}</label>
+                        <div className="flex items-center gap-2">
+                          <Input id="batch-minutes" type="number" min={MIN_BATCH_MINUTES} max={MAX_BATCH_MINUTES} value={batchMinutes} onChange={(e) => setBatchMinutes(e.target.value)} placeholder="70" disabled={controlsDisabled} className="h-8 w-24" />
+                          <span className="text-xs text-muted-foreground">{t("range.minutes")}</span>
+                        </div>
+                        <p className="text-xs text-muted-foreground">{t("range.batchHint")}</p>
+                      </div>
                     </div>
                   ) }] : []),
                   ...(workflowsEnabled && advancedSchema.length > 0 ? [{ id: "advanced", label: t("advanced.chip"), icon: <SlidersHorizontal />, count: advancedCount, content: (

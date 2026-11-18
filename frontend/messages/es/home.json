@@ -15,14 +15,16 @@
     "uploadFontRetry": "No se pudo subir la fuente. Inténtalo de nuevo.",
     "processVideo": "No se pudo procesar el video. Inténtalo de nuevo.",
     "fileTooLarge": "Este archivo pesa {size} y supera el límite de subida de {limit}. Prueba con una exportación más corta o un archivo más pequeño.",
-    "api": "Error de API: {status}"
+    "api": "Error de API: {status}",
+    "batchStopped": "Se iniciaron {done} de {total} lotes antes de detenerse."
   },
   "status": {
     "uploading": "Subiendo video…",
     "checkingLength": "Revisando la duración del video…",
     "starting": "Iniciando la generación…",
     "working": "Trabajando…",
-    "uploadingFont": "Subiendo…"
+    "uploadingFont": "Subiendo…",
+    "batch": "Iniciando el lote {current} de {total}…"
   },
   "drop": "Suelta para subir tu video",
   "readyToUpload": "{size} · listo para subir",
@@ -339,5 +341,24 @@
       "relaxed": "Permitidos",
       "question": "Una pregunta"
     }
+  },
+  "range": {
+    "chip": "Rango y omisiones",
+    "body": "Para streams y VODs largos: procesa una parte a la vez y deja fuera partes como los tiempos de espera. Usa las marcas de tiempo del propio vídeo.",
+    "part": "Parte del vídeo",
+    "start": "Hora de inicio",
+    "end": "Hora de fin",
+    "startPlaceholder": "0:00:00",
+    "endPlaceholder": "1:10:00",
+    "partHint": "Déjalo vacío para usar todo el vídeo. Solo se descarga esta parte y los tiempos de los clips cuentan desde su inicio. El límite de duración se aplica a esta parte, no al vídeo completo.",
+    "skip": "Omitir estas marcas de tiempo",
+    "skipPlaceholder": "12:30-18:45, 1:02:00-1:10:00",
+    "skipHint": "Nunca se crearán clips de estos tramos. Sepáralos con comas.",
+    "batch": "Dividir en lotes",
+    "minutes": "minutos cada uno",
+    "batchHint": "Crea una tarea por lote, una tras otra sin huecos, y se ejecutan en orden. Requiere un enlace. Déjalo vacío para una sola tarea.",
+    "invalid": "Revisa el rango de tiempo: usa horas como 1:10:00 y que el final sea posterior al inicio.",
+    "batchInvalid": "La duración del lote debe estar entre {min} y {max} minutos.",
+    "nothingToSplit": "No hay nada que dividir en ese rango de tiempo."
   }
 }
