@@ -5,6 +5,7 @@ AI-related functions for transcript analysis with enhanced precision and viralit
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Literal
 import asyncio
+import contextvars
 import logging
 import math
 import random
@@ -1132,6 +1133,33 @@ def _is_transient_model_error(error: Exception) -> bool:
     return False
 
 
+# Per-task token counter: task_service sets a dict here before the pipeline and
+# reads it afterwards. Calls made outside a task (no dict set) only log.
+LLM_USAGE: contextvars.ContextVar[Optional[Dict[str, int]]] = contextvars.ContextVar(
+    "llm_usage", default=None
+)
+
+
+def _record_llm_usage(result: Any) -> None:
+    """Log one model call's token usage and add it to the task counter."""
+    try:
+        usage = result.usage()
+        input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+        output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+        requests = int(getattr(usage, "requests", 0) or 0)
+        logger.info(
+            "LLM usage: input_tokens=%s output_tokens=%s requests=%s",
+            input_tokens, output_tokens, requests,
+        )
+        totals = LLM_USAGE.get()
+        if totals is not None:
+            totals["llm_input_tokens"] = totals.get("llm_input_tokens", 0) + input_tokens
+            totals["llm_output_tokens"] = totals.get("llm_output_tokens", 0) + output_tokens
+            totals["llm_calls"] = totals.get("llm_calls", 0) + 1
+    except Exception as exc:  # a metric must never break clip selection
+        logger.debug("Could not record LLM usage: %s", exc)
+
+
 async def _run_transcript_analysis(
     agent: Agent,
     prompt: str,
@@ -1150,6 +1178,7 @@ async def _run_transcript_analysis(
             for attempt in range(1, TRANSCRIPT_ANALYSIS_MAX_ATTEMPTS + 1):
                 try:
                     result = await agent.run(prompt)
+                    _record_llm_usage(result)
                     if hasattr(result, "response"):
                         logger.info("AI analysis completed using model %s", result.response.model_name)
                     return result

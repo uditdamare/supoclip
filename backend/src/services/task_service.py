@@ -662,6 +662,9 @@ class TaskService(ClipEditingMixin):
                     "cleanup_settings": normalized_cleanup_settings,
                 }
 
+            from ..ai import LLM_USAGE
+            llm_usage: Dict[str, int] = {}
+            LLM_USAGE.set(llm_usage)
             pipeline_start = perf_counter()
             result = await self.video_service.process_video_complete(
                 url=url,
@@ -689,6 +692,7 @@ class TaskService(ClipEditingMixin):
             stage_timings["pipeline_seconds"] = round(
                 perf_counter() - pipeline_start, 3
             )
+            stage_timings.update(llm_usage)
             video_path = Path(result["video_path"])
             workflow_plan = result.get("workflow_plan")
             if workflow_plan is not None and not result.get("workflow_plan_restored"):
